@@ -1,0 +1,98 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+    scroll-behavior: smooth;
+}
+
+/* Global Dark Mode otomatis untuk seluruh halaman & komponen */
+html.dark,
+html.dark body {
+    background-color: #020617;
+    /* slate-950 */
+    color: #f1f5f9;
+    /* slate-100 */
+}
+
+html.dark .bg-white,
+html.dark .bg-white\/85 {
+    background-color: #0f172a !important;
+    /* slate-900 */
+}
+
+html.dark .bg-slate-50,
+html.dark .bg-slate-50\/70,
+html.dark .bg-slate-50\/50 {
+    background-color: #020617 !important;
+    /* slate-950 */
+}
+
+html.dark .bg-slate-100 {
+    background-color: #1e293b !important;
+    /* slate-800 */
+}
+
+html.dark .border-slate-200,
+html.dark .border-slate-200\/80,
+html.dark .border-slate-200\/70,
+html.dark .border-slate-100,
+html.dark .border-slate-300 {
+    border-color: #1e293b !important;
+    /* slate-800 */
+}
+
+html.dark .text-slate-900,
+html.dark .text-slate-800 {
+    color: #f8fafc !important;
+    /* slate-50 */
+}
+
+html.dark .text-slate-700,
+html.dark .text-slate-600 {
+    color: #cbd5e1 !important;
+    /* slate-300 */
+}
+
+html.dark .text-slate-500,
+html.dark .text-slate-400 {
+    color: #94a3b8 !important;
+    /* slate-400 */
+}
+
+html.dark input,
+html.dark textarea,
+html.dark select {
+    background-color: #0f172a !important;
+    color: #f8fafc !important;
+    border-color: #334155 !important;
+}
+
+@keyframes float {
+
+    0%,
+    100% {
+        transform: translateY(0px);
+    }
+
+    50% {
+        transform: translateY(-12px);
+    }
+}
+
+.animate-float {
+    animation: float 4s ease-in-out infinite;
+}
+
+/* Scroll Reveal Animation */
+.reveal {
+    opacity: 0;
+    transform: translateY(24px);
+    transition: opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1),
+        transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.reveal.active {
+    opacity: 1;
+    transform: translateY(0);
+}
