@@ -14,6 +14,7 @@ import {
 } from 'lucide-vue-next'
 
 type DbOrderStatus = 'pending' | 'paid' | 'shipped' | 'delivered' | 'failed'
+type DbShippingStatus = 'pending' | 'packed' | 'shipped' | 'delivered'
 
 interface DbOrderItem {
   id: number
@@ -41,6 +42,7 @@ interface DbOrder {
   discountAmount: number
   grandTotal: number
   status: DbOrderStatus
+  statusPengiriman: DbShippingStatus | string
   paymentMethod: string | null
   createdAt: string
   items: DbOrderItem[]
@@ -58,8 +60,15 @@ const order = computed(() =>
   (ordersData.value ?? []).find((o) => o.orderNumber === String(route.params.id))
 )
 
-const editStatus = ref<DbOrderStatus>('paid')
-const editCourier = ref('')
+const normalizeShippingStatus = (raw?: string): DbShippingStatus => {
+  const s = String(raw || 'pending').trim().toLowerCase()
+  if (s === 'packed' || s === 'dikemas' || s === 'sedang dikemas') return 'packed'
+  if (s === 'shipped' || s === 'dikirim' || s === 'dalam perjalanan') return 'shipped'
+  if (s === 'delivered' || s === 'sudah sampai' || s === 'sampai' || s === 'selesai') return 'delivered'
+  return 'pending'
+}
+
+const editShippingStatus = ref<DbShippingStatus>('pending')
 const editNotes = ref('')
 const isSaving = ref(false)
 
@@ -67,8 +76,7 @@ watch(
   order,
   (val) => {
     if (!val) return
-    editStatus.value = val.status
-    editCourier.value = val.shippingCourier || ''
+    editShippingStatus.value = normalizeShippingStatus(val.statusPengiriman)
     editNotes.value = val.shippingNotes || ''
   },
   { immediate: true }
@@ -82,12 +90,11 @@ const handleSaveOrder = async () => {
       method: 'POST',
       body: {
         orderNumber: order.value.orderNumber,
-        status: editStatus.value,
-        shippingCourier: editCourier.value,
-        shippingNotes: editNotes.value,
+        statusPengiriman: editShippingStatus.value,
+        shippingNotes: editNotes.value.trim() || null,
       },
     })
-    showToast(`Pesanan ${order.value.orderNumber} berhasil diperbarui.`)
+    showToast(`Status pengiriman & resi ${order.value.orderNumber} berhasil diperbarui.`)
     await refresh()
   } catch (err: any) {
     showToast(err?.data?.statusMessage || 'Gagal menyimpan perubahan pesanan.')
@@ -96,7 +103,7 @@ const handleSaveOrder = async () => {
   }
 }
 
-const statusMeta: Record<DbOrderStatus, { label: string; badgeClass: string; icon: any }> = {
+const paymentStatusMeta: Record<DbOrderStatus, { label: string; badgeClass: string; icon: any }> = {
   pending: {
     label: 'Menunggu Bayar',
     badgeClass: 'border-amber-200 bg-amber-50 text-amber-700',
@@ -105,6 +112,34 @@ const statusMeta: Record<DbOrderStatus, { label: string; badgeClass: string; ico
   paid: {
     label: 'Sudah Dibayar',
     badgeClass: 'border-indigo-200 bg-indigo-50 text-indigo-700',
+    icon: CheckCircle2,
+  },
+  shipped: {
+    label: 'Sudah Dibayar',
+    badgeClass: 'border-indigo-200 bg-indigo-50 text-indigo-700',
+    icon: CheckCircle2,
+  },
+  delivered: {
+    label: 'Sudah Dibayar',
+    badgeClass: 'border-indigo-200 bg-indigo-50 text-indigo-700',
+    icon: CheckCircle2,
+  },
+  failed: {
+    label: 'Dibatalkan / Gagal',
+    badgeClass: 'border-rose-200 bg-rose-50 text-rose-700',
+    icon: XCircle,
+  },
+}
+
+const shippingStatusMeta: Record<DbShippingStatus, { label: string; badgeClass: string; icon: any }> = {
+  pending: {
+    label: 'Menunggu Pengiriman',
+    badgeClass: 'border-amber-200 bg-amber-50 text-amber-700',
+    icon: Clock,
+  },
+  packed: {
+    label: 'Sedang Dikemas',
+    badgeClass: 'border-violet-200 bg-violet-50 text-violet-700',
     icon: Package,
   },
   shipped: {
@@ -117,12 +152,12 @@ const statusMeta: Record<DbOrderStatus, { label: string; badgeClass: string; ico
     badgeClass: 'border-emerald-200 bg-emerald-50 text-emerald-700',
     icon: CheckCircle2,
   },
-  failed: {
-    label: 'Dibatalkan / Gagal',
-    badgeClass: 'border-rose-200 bg-rose-50 text-rose-700',
-    icon: XCircle,
-  },
 }
+
+const currentShippingMeta = computed(() => {
+  const key = normalizeShippingStatus(order.value?.statusPengiriman)
+  return shippingStatusMeta[key]
+})
 
 const formatDate = (iso: string) =>
   new Date(iso).toLocaleDateString('id-ID', {
@@ -173,47 +208,77 @@ const formatDate = (iso: string) =>
           </p>
         </div>
 
-        <span
-          :class="[
-            'inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-xs font-bold',
-            statusMeta[order.status].badgeClass,
-          ]"
-        >
-          <component :is="statusMeta[order.status].icon" class="h-4 w-4" />
-          <span>{{ statusMeta[order.status].label }}</span>
-        </span>
+        <div class="flex flex-wrap items-center gap-2">
+          <!-- Badge Status Pembayaran -->
+          <span
+            :class="[
+              'inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-xs font-bold',
+              paymentStatusMeta[order.status].badgeClass,
+            ]"
+          >
+            <component :is="paymentStatusMeta[order.status].icon" class="h-4 w-4" />
+            <span>{{ paymentStatusMeta[order.status].label }}</span>
+          </span>
+
+          <!-- Badge Status Pengiriman -->
+          <span
+            :class="[
+              'inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-xs font-bold',
+              currentShippingMeta.badgeClass,
+            ]"
+          >
+            <component :is="currentShippingMeta.icon" class="h-4 w-4" />
+            <span>{{ currentShippingMeta.label }}</span>
+          </span>
+        </div>
       </div>
 
       <!-- Form Kontrol Pengiriman Admin -->
       <div class="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs sm:p-6">
         <h2 class="border-b border-slate-100 pb-3.5 text-sm font-extrabold text-slate-900">
-          Update Status & Informasi Pengiriman
+          Update Status Pengiriman & Nomor Resi
         </h2>
 
-        <form @submit.prevent="handleSaveOrder" class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <form @submit.prevent="handleSaveOrder" class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <!-- Status Pembayaran (Read-Only) -->
           <div>
-            <label class="block text-xs font-bold text-slate-700">Status Pesanan</label>
-            <select
-              v-model="editStatus"
-              class="mt-1.5 w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-xs font-bold text-slate-900 focus:border-indigo-600 focus:outline-none sm:text-sm"
-            >
-              <option value="pending">Menunggu Bayar</option>
-              <option value="paid">Sudah Dibayar</option>
-              <option value="shipped">Dalam Perjalanan</option>
-              <option value="delivered">Sudah Sampai</option>
-              <option value="failed">Dibatalkan / Gagal</option>
-            </select>
-          </div>
-
-          <div>
-            <label class="block text-xs font-bold text-slate-700">Ekspedisi / Kurir</label>
+            <label class="block text-xs font-bold text-slate-500">Status Pembayaran (Read-Only)</label>
             <input
-              v-model="editCourier"
               type="text"
-              class="mt-1.5 w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-xs text-slate-900 focus:border-indigo-600 focus:outline-none sm:text-sm"
+              :value="paymentStatusMeta[order.status].label"
+              readonly
+              disabled
+              class="mt-1.5 w-full cursor-not-allowed rounded-xl border border-slate-200 bg-slate-100 px-3.5 py-2.5 text-xs font-bold text-slate-600 sm:text-sm"
             />
           </div>
 
+          <!-- Ekspedisi / Kurir (Read-Only) -->
+          <div>
+            <label class="block text-xs font-bold text-slate-500">Ekspedisi / Kurir (Read-Only)</label>
+            <input
+              type="text"
+              :value="order.shippingCourier || '-'"
+              readonly
+              disabled
+              class="mt-1.5 w-full cursor-not-allowed rounded-xl border border-slate-200 bg-slate-100 px-3.5 py-2.5 text-xs font-semibold text-slate-600 sm:text-sm"
+            />
+          </div>
+
+          <!-- Status Pengiriman (Editable Dropdown) -->
+          <div>
+            <label class="block text-xs font-bold text-slate-700">Status Pengiriman</label>
+            <select
+              v-model="editShippingStatus"
+              class="mt-1.5 w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-xs font-bold text-slate-900 focus:border-indigo-600 focus:outline-none sm:text-sm"
+            >
+              <option value="pending">Menunggu Pengiriman</option>
+              <option value="packed">Sedang Dikemas</option>
+              <option value="shipped">Dalam Perjalanan</option>
+              <option value="delivered">Sudah Sampai</option>
+            </select>
+          </div>
+
+          <!-- Catatan / Nomor Resi (Editable -> shippingNotes) -->
           <div>
             <label class="block text-xs font-bold text-slate-700">Catatan / Nomor Resi</label>
             <input
@@ -224,7 +289,7 @@ const formatDate = (iso: string) =>
             />
           </div>
 
-          <div class="flex justify-end sm:col-span-3">
+          <div class="flex justify-end sm:col-span-2 lg:col-span-4">
             <button
               type="submit"
               :disabled="isSaving"
@@ -232,7 +297,7 @@ const formatDate = (iso: string) =>
             >
               <Loader2 v-if="isSaving" class="h-4 w-4 animate-spin" />
               <Save v-else class="h-4 w-4" />
-              <span>{{ isSaving ? 'Menyimpan...' : 'Simpan Perubahan Pesanan' }}</span>
+              <span>{{ isSaving ? 'Menyimpan...' : 'Simpan Perubahan Pengiriman' }}</span>
             </button>
           </div>
         </form>
@@ -259,7 +324,7 @@ const formatDate = (iso: string) =>
               <h3 class="text-sm font-extrabold text-slate-900">Alamat Pengiriman Pembeli</h3>
               <p class="mt-1 text-xs leading-relaxed text-slate-600 sm:text-sm">{{ order.shippingAddress }}</p>
               <p v-if="order.shippingNotes" class="mt-1.5 text-xs font-medium text-indigo-600">
-                Catatan: {{ order.shippingNotes }}
+                Catatan / Resi: {{ order.shippingNotes }}
               </p>
             </div>
           </div>

@@ -42,7 +42,7 @@ export const orders = pgTable('orders', {
     insuranceCost: integer().notNull().default(0),
     discountAmount: integer().notNull().default(0),
     grandTotal: integer().notNull(),
-
+    statusPengiriman: text().notNull().default('pending'), // 'pending' | 'shipped' | 'delivered'
     status: text().notNull().default('pending'), // 'pending' | 'paid' | 'failed' | 'shipped' | 'completed'
     paymentMethod: text(), // Contoh: 'BCA VA', 'QRIS', 'GOPAY'
     snapToken: text(), // Token Midtrans Snap jika pembeli ingin lanjut bayar nanti
@@ -75,4 +75,30 @@ export const userProfiles = pgTable('user_profiles', {
     address: text('address').default(''),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
+})
+
+export const categories = pgTable('categories', {
+    id: serial().primaryKey(),
+    name: text().notNull().unique(),
+    slug: text().notNull().unique(),
+    createdAt: timestamp().defaultNow().notNull(),
+    updatedAt: timestamp().defaultNow().notNull(),
+})
+
+export const productRatings = pgTable('product_ratings', {
+    id: serial().primaryKey(),
+    userId: text()
+        .notNull()
+        .references(() => user.id, { onDelete: 'cascade' }),
+    orderId: integer()
+        .notNull()
+        .references(() => orders.id, { onDelete: 'cascade' }),
+    orderNumber: text().notNull(),
+    productId: integer().references(() => products.id, { onDelete: 'set null' }),
+    productName: text().notNull(),
+    productImage: text().notNull(),
+    customerName: text().notNull(),
+    rating: integer().notNull(), // 1 - 5
+    comment: text().notNull(),
+    createdAt: timestamp().defaultNow().notNull(),
 })

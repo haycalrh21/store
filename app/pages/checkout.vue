@@ -345,17 +345,20 @@ const goToStep = (stepId: number) => {
 // Selesaikan Pesanan Setelah Midtrans Sukses / Pending
 // Simpan riwayat pesanan sementara & langsung arahkan ke /dashboard/pesanan
 // Simpan pesanan ke PostgreSQL setelah mendapat respons dari Midtrans
+// Simpan pesanan ke PostgreSQL setelah mendapat respons dari Midtrans
 const finalizeAndRedirectToOrders = async (
   generatedCode: string,
   status: 'paid' | 'pending',
   paymentMethodLabel: string,
-  snapToken: string
+  snapToken: string,
+  statusPengiriman: 'pending' | 'packed' | 'shipped' | 'delivered' = 'pending'
 ) => {
   await $fetch('/api/orders', {
     method: 'POST',
     body: {
       orderNumber: generatedCode,
       status,
+      statusPengiriman,
       paymentMethod: paymentMethodLabel,
       snapToken,
       customerName: shippingForm.fullName,
@@ -425,16 +428,16 @@ const payWithMidtrans = async () => {
       return
     }
 
-    snapInstance.pay(token, {
+  snapInstance.pay(token, {
       onSuccess: async (result: any) => {
         const method = result?.payment_type?.replace(/_/g, ' ').toUpperCase() || 'MIDTRANS'
         showToast(`Pembayaran ${generatedCode} berhasil!`)
-        await finalizeAndRedirectToOrders(generatedCode, 'paid', method, token)
+        await finalizeAndRedirectToOrders(generatedCode, 'paid', method, token, 'pending')
       },
       onPending: async (result: any) => {
         const method = result?.payment_type?.replace(/_/g, ' ').toUpperCase() || 'MIDTRANS'
         showToast(`Pesanan ${generatedCode} menunggu pembayaran.`)
-        await finalizeAndRedirectToOrders(generatedCode, 'pending', method, token)
+        await finalizeAndRedirectToOrders(generatedCode, 'pending', method, token, 'pending')
       },
       onError: () => {
         formError.value = 'Pembayaran gagal diproses oleh Midtrans. Silakan coba lagi.'

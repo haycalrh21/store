@@ -146,7 +146,7 @@ const handleAddToCart = () => {
         </span>
 
         <span
-          class="rounded-full bg-blue/90 px-2.5 py-1 text-[11px] font-bold text-slate-800 shadow-xs backdrop-blur-md"
+          class="rounded-full bg-blue/90 px-2.5 py-1 text-[11px] font-bold text-slate-800 shadow-xs backdrop-blur-md dark:bg-slate-700/90 dark:text-slate-200"
         >
           {{ product.category }}
         </span>

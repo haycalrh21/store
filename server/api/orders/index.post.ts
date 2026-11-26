@@ -1,11 +1,14 @@
 import { eq, sql } from 'drizzle-orm'
 import { orders, orderItems, products } from '../../db/schema'
 
+type ShippingStatus = 'pending' | 'packed' | 'shipped' | 'delivered'
+
 export default defineEventHandler(async (event) => {
     const session = await getUserSession(event)
     const body = await readBody<{
         orderNumber: string
         status?: 'pending' | 'paid' | 'failed' | 'shipped' | 'delivered'
+        statusPengiriman?: ShippingStatus
         paymentMethod?: string
         snapToken?: string
         customerName?: string
@@ -32,7 +35,7 @@ export default defineEventHandler(async (event) => {
         throw createError({ statusCode: 400, statusMessage: 'Nomor pesanan wajib diisi' })
     }
 
-    // Cek apakah orderNumber sudah ada di database (untuk update status bayar / konfirmasi sampai)
+    // Cek apakah orderNumber sudah ada di database (untuk update status bayar / pengiriman)
     const existing = await db
         .select()
         .from(orders)
@@ -45,6 +48,8 @@ export default defineEventHandler(async (event) => {
             .update(orders)
             .set({
                 status: body.status ?? current.status,
+                statusPengiriman: body.statusPengiriman ?? current.statusPengiriman,
+                shippingNotes: body.shippingNotes !== undefined ? body.shippingNotes : current.shippingNotes,
                 paymentMethod: body.paymentMethod ?? current.paymentMethod,
                 snapToken: body.snapToken ?? current.snapToken,
                 updatedAt: new Date(),
@@ -77,6 +82,7 @@ export default defineEventHandler(async (event) => {
                 insuranceCost: Math.round(body.insuranceCost || 0),
                 discountAmount: Math.round(body.discountAmount || 0),
                 grandTotal: Math.round(body.grandTotal || 0),
+                statusPengiriman: body.statusPengiriman || 'pending',
                 status: body.status || 'pending',
                 paymentMethod: body.paymentMethod || null,
                 snapToken: body.snapToken || null,

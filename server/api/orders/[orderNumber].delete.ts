@@ -22,7 +22,7 @@ export default defineEventHandler(async (event) => {
 
     const order = existing[0]!
 
-    // 2. Pastikan hanya status 'pending' yang boleh dibatalkan & dihapus
+    // 2. Pastikan hanya status 'pending' yang boleh dibatalkan
     if (order.status !== 'pending') {
         throw createError({
             statusCode: 400,
@@ -41,19 +41,19 @@ export default defineEventHandler(async (event) => {
         const authHeader = `Basic ${Buffer.from(`${serverKey}:`).toString('base64')}`
 
         try {
-            const res = await $fetch<{ status_code?: string; transaction_status?: string; status_message?: string }>(
-                midtransCancelUrl,
-                {
-                    method: 'POST',
-                    headers: {
-                        Accept: 'application/json',
-                        'Content-Type': 'application/json',
-                        Authorization: authHeader,
-                    },
-                }
-            )
+            const res = await $fetch<{
+                status_code?: string
+                transaction_status?: string
+                status_message?: string
+            }>(midtransCancelUrl, {
+                method: 'POST',
+                headers: {
+                    Accept: 'application/json',
+                    'Content-Type': 'application/json',
+                    Authorization: authHeader,
+                },
+            })
 
-            // Jika ternyata di Midtrans sudah terlanjur dibayar (settlement/capture), batalkan proses hapus
             if (res.transaction_status === 'settlement' || res.transaction_status === 'capture') {
                 throw createError({
                     statusCode: 400,
@@ -62,18 +62,17 @@ export default defineEventHandler(async (event) => {
             }
         } catch (err: any) {
             const code = err?.statusCode || err?.response?.status
-            // 404 = user tutup popup Snap sebelum pilih metode bayar; 412 = sudah expire/cancel di Midtrans
-            // Selain 404 & 412, lempar error ke frontend
             if (code !== 404 && code !== 412) {
                 throw createError({
                     statusCode: 502,
-                    statusMessage: err?.data?.status_message || err?.statusMessage || 'Gagal membatalkan transaksi di Midtrans.',
+                    statusMessage:
+                        err?.data?.status_message || err?.statusMessage || 'Gagal membatalkan transaksi di Midtrans.',
                 })
             }
         }
     }
 
-    // 4. Kembalikan stok produk & hapus pesanan dari database
+    // 4. Kembalikan stok produk & ubah status pesanan menjadi 'failed' (tanpa menghapus dari database)
     await db.transaction(async (tx) => {
         const items = await tx
             .select()
@@ -91,8 +90,14 @@ export default defineEventHandler(async (event) => {
             }
         }
 
-        await tx.delete(orders).where(eq(orders.id, order.id))
+        await tx
+            .update(orders)
+            .set({
+                status: 'failed',
+                updatedAt: new Date(),
+            })
+            .where(eq(orders.id, order.id))
     })
 
-    return { deleted: true, orderNumber }
+    return { cancelled: true, orderNumber }
 })

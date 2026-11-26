@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Package, Truck, CheckCircle2, ArrowRight, MapPin, Phone, Mail } from 'lucide-vue-next'
+import { Package, Truck, CheckCircle2, ArrowRight, MapPin, Phone, User } from 'lucide-vue-next'
 
 interface DbOrderItem {
   id: number
@@ -27,16 +27,17 @@ interface DbOrder {
   discountAmount: number
   grandTotal: number
   status: 'pending' | 'paid' | 'packed' | 'shipped' | 'shipping' | 'delivered' | 'failed'
+  statusPengiriman?: 'pending' | 'packed' | 'shipped' | 'delivered' | string
   paymentMethod: string | null
   createdAt: string
   items: DbOrderItem[]
 }
 
 const { formatRupiah } = useStore()
-const { user} = useUserSession()
+const { user } = useUserSession()
 
-// Ambil data pesanan dari API database
-const { data: ordersData } = await useFetch<DbOrder[]>('/api/orders/admin', {
+// Ambil pesanan milik user yang sedang login
+const { data: ordersData } = await useFetch<DbOrder[]>('/api/orders', {
   default: () => [],
 })
 
@@ -45,58 +46,70 @@ const { data: profileData } = await useFetch<any>('/api/user/profile', {
   default: () => null,
 })
 
-console.log(user.value)
-
-
 const currentUser = computed(() => profileData.value ?? (user.value as any) ?? null)
+const orders = computed(() => ordersData.value ?? [])
 
-// Filter pesanan milik user yang sedang login
-const orders = computed(() => {
-  const all = ordersData.value ?? []
-  const uid = currentUser.value?.id
-  const email = currentUser.value?.email?.toLowerCase()
+// Gabungkan status pembayaran (`status`) & status pengiriman (`statusPengiriman`)
+const getEffectiveStatus = (order: DbOrder) => {
+  const payStatus = String(order.status || '').trim().toLowerCase()
+  if (payStatus === 'failed' || payStatus === 'cancel' || payStatus === 'cancelled') {
+    return 'failed'
+  }
+  if (payStatus === 'pending') {
+    return 'pending'
+  }
 
-  if (!uid && !email) return all
+  const shipStatus = String(order.statusPengiriman || '').trim().toLowerCase()
+  if (shipStatus === 'delivered' || shipStatus === 'sudah sampai' || payStatus === 'delivered') {
+    return 'delivered'
+  }
+  if (shipStatus === 'shipped' || shipStatus === 'shipping' || shipStatus === 'dalam perjalanan' || payStatus === 'shipped') {
+    return 'shipped'
+  }
+  if (shipStatus === 'packed' || shipStatus === 'sedang dikemas' || payStatus === 'packed' || payStatus === 'paid') {
+    return 'packed'
+  }
 
-  return all.filter(
-    (o) =>
-      (uid && o.userId === uid) ||
-      (email && o.customerEmail?.toLowerCase() === email)
-  )
-})
+  return 'pending'
+}
 
 const packedCount = computed(
-  () => orders.value.filter((o) => ['paid', 'packed'].includes(o.status)).length
+  () => orders.value.filter((o) => getEffectiveStatus(o) === 'packed').length
 )
 const shippingCount = computed(
-  () => orders.value.filter((o) => ['shipped', 'shipping'].includes(o.status)).length
+  () => orders.value.filter((o) => getEffectiveStatus(o) === 'shipped').length
 )
 const deliveredCount = computed(
-  () => orders.value.filter((o) => o.status === 'delivered').length
+  () => orders.value.filter((o) => getEffectiveStatus(o) === 'delivered').length
 )
 
-const latestOrders = computed(() => orders.value.slice(0, 2))
+const latestOrders = computed(() => orders.value.slice(0, 3))
 
 const statusLabel: Record<string, { text: string; badge: string }> = {
   pending: { text: 'Menunggu bayar', badge: 'bg-amber-50 text-amber-700 border-amber-200' },
-  paid: { text: 'Sudah di-packing', badge: 'bg-amber-50 text-amber-700 border-amber-200' },
   packed: { text: 'Sudah di-packing', badge: 'bg-amber-50 text-amber-700 border-amber-200' },
   shipped: { text: 'Dalam perjalanan', badge: 'bg-sky-50 text-sky-700 border-sky-200' },
-  shipping: { text: 'Dalam perjalanan', badge: 'bg-sky-50 text-sky-700 border-sky-200' },
   delivered: { text: 'Sudah sampai', badge: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
   failed: { text: 'Dibatalkan', badge: 'bg-rose-50 text-rose-700 border-rose-200' },
 }
 
-const getStatusBadge = (status: string) =>
-  statusLabel[status] ?? { text: status || 'Pending', badge: 'bg-slate-50 text-slate-700 border-slate-200' }
+const getOrderBadge = (order: DbOrder) => {
+  const key = getEffectiveStatus(order)
+  return statusLabel[key] ?? { text: key, badge: 'bg-slate-50 text-slate-700 border-slate-200' }
+}
 
-// Ambil telepon & alamat dari profil user, atau fallback ke data pesanan terakhir user
-
+// Ambil telepon & alamat dari profil user, atau fallback ke pesanan terakhir
+const displayPhone = computed(
+  () => currentUser.value?.phone || orders.value[0]?.customerPhone || 'Belum diatur'
+)
+const displayAddress = computed(
+  () => currentUser.value?.address || orders.value[0]?.shippingAddress || 'Belum diatur'
+)
 </script>
 
 <template>
   <div class="space-y-6">
-    <!-- 3 Kartu Status Pengiriman Sejajar -->
+    <!-- 3 Kartu Status Pengiriman Sejajar (dibaca dari statusPengiriman) -->
     <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
       <NuxtLink
         to="/dashboard/pesanan"
@@ -183,10 +196,10 @@ const getStatusBadge = (status: string) =>
             <span
               :class="[
                 'whitespace-nowrap rounded-full border px-3 py-1 text-xs font-bold',
-                getStatusBadge(order.status).badge,
+                getOrderBadge(order).badge,
               ]"
             >
-              {{ getStatusBadge(order.status).text }}
+              {{ getOrderBadge(order).text }}
             </span>
             <span class="whitespace-nowrap text-sm font-extrabold text-slate-900">
               {{ formatRupiah(order.grandTotal) }}
@@ -210,16 +223,16 @@ const getStatusBadge = (status: string) =>
 
       <div class="mt-4 space-y-2.5 text-sm text-slate-600">
         <p class="flex items-center gap-2.5">
-          <Mail class="h-4 w-4 shrink-0 text-slate-400" />
-          <span>{{ user?.name }}</span>
+          <User class="h-4 w-4 shrink-0 text-slate-400" />
+          <span class="font-semibold text-slate-900">{{ currentUser?.name || 'Pelanggan' }}</span>
         </p>
         <p class="flex items-center gap-2.5">
           <Phone class="h-4 w-4 shrink-0 text-slate-400" />
-          <span>{{ 'Belum diatur' }}</span>
+          <span>{{ displayPhone }}</span>
         </p>
         <p class="flex items-start gap-2.5">
           <MapPin class="mt-0.5 h-4 w-4 shrink-0 text-slate-400" />
-          <span>{{  'Belum diatur' }}</span>
+          <span>{{ displayAddress }}</span>
         </p>
       </div>
     </div>

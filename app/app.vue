@@ -11,7 +11,7 @@ const { toastMessage } = useStore()
     <main class="flex-1">
       <NuxtPage />
     </main>
-
+<ConfirmDialog />
     <FooterSection />
 
     <!-- Slide-Over Keranjang -->

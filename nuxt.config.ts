@@ -12,6 +12,9 @@ export default defineNuxtConfig({
     '@nuxthub/core',
     '@nuxtjs/color-mode',
   ],
+  vue: {
+    runtimeCompiler: true,
+  },
   compatibilityDate: '2025-07-15',
   devtools: { enabled: true },
 

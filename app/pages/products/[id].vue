@@ -11,8 +11,24 @@ import {
   ChevronLeft,
   ChevronRight,
   Layers,
+  CheckCircle2,
+  MessageSquare,
 } from 'lucide-vue-next'
 import type { ApiProduct } from '~/components/ProductGalleryCard.vue'
+
+interface ProductReviewItem {
+  id: number
+  customerName: string
+  rating: number
+  comment: string
+  createdAt: string
+}
+
+interface ProductRatingsResponse {
+  averageRating: number
+  totalReviews: number
+  reviews: ProductReviewItem[]
+}
 
 const route = useRoute()
 const { addToCart, isCartOpen, formatRupiah } = useStore()
@@ -39,6 +55,38 @@ const product = computed(() => {
   const id = Number(route.params.id)
   return productList.value.find((p) => p.id === id)
 })
+
+// Ambil daftar rating & komentar produk (read-only)
+const { data: ratingsData } = await useFetch<ProductRatingsResponse>(
+  () => `/api/admin/products/${route.params.id}/ratings`,
+  {
+    default: () => ({ averageRating: 0, totalReviews: 0, reviews: [] }),
+  }
+)
+
+const productReviews = computed(() => ratingsData.value?.reviews ?? [])
+const totalReviewsCount = computed(() => ratingsData.value?.totalReviews ?? product.value?.reviewsCount ?? 0)
+const displayedRating = computed(() => {
+  if ((ratingsData.value?.totalReviews ?? 0) > 0) {
+    return ratingsData.value!.averageRating.toFixed(1)
+  }
+  return Number(product.value?.rating ?? 5.0).toFixed(1)
+})
+
+const formatReviewDate = (iso: string) =>
+  new Date(iso).toLocaleDateString('id-ID', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  })
+
+const getInitials = (name: string) =>
+  String(name || 'P')
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() || '')
+    .join('')
 
 // Gabungkan array images & fallback image utama tanpa duplikat
 const galleryImages = computed<string[]>(() => {
@@ -109,8 +157,8 @@ const buildCartPayload = () => {
     price: product.value.price,
     originalPrice: product.value.originalPrice ?? undefined,
     discount: product.value.discount ?? undefined,
-    rating: product.value.rating ?? 5.0,
-    reviewsCount: product.value.reviewsCount ?? 0,
+    rating: Number(displayedRating.value),
+    reviewsCount: totalReviewsCount.value,
     stock: product.value.stock,
     image: galleryImages.value[0] || product.value.image,
     images: galleryImages.value,
@@ -171,235 +219,323 @@ const handleBuyNow = () => {
     </div>
 
     <!-- Konten Detail Produk -->
-    <div v-else class="mt-8 grid gap-10 lg:grid-cols-2 lg:items-start">
-      <!-- Kiri: Galeri Carousel Interaktif -->
-      <div class="space-y-4">
-        <div
-          class="group relative aspect-square w-full overflow-hidden rounded-3xl border border-slate-200 bg-slate-100 shadow-sm select-none"
-          @touchstart.passive="handleTouchStart"
-          @touchend.passive="handleTouchEnd"
-        >
-          <!-- Gambar Utama dengan Crossfade & Subtle Zoom -->
-          <img
-            v-for="(imgUrl, idx) in galleryImages"
-            :key="`${product.id}-${idx}`"
-            :src="imgUrl"
-            :alt="`${product.name} - Foto ${idx + 1}`"
-            :class="[
-              'absolute inset-0 h-full w-full object-cover transition-all duration-500 ease-out',
-              idx === activeSlide
-                ? 'scale-100 opacity-100'
-                : 'pointer-events-none scale-105 opacity-0',
-            ]"
-          />
-
-          <!-- Indikator Jumlah Foto di Kanan Atas -->
+    <div v-else class="mt-8 space-y-14">
+      <div class="grid gap-10 lg:grid-cols-2 lg:items-start">
+        <!-- Kiri: Galeri Carousel Interaktif -->
+        <div class="space-y-4">
           <div
-            v-if="hasMultipleImages"
-            class="absolute right-4 top-4 inline-flex items-center gap-1.5 rounded-full bg-slate-900/75 px-3 py-1.5 text-xs font-bold text-white backdrop-blur-md"
+            class="group relative aspect-square w-full overflow-hidden rounded-3xl border border-slate-200 bg-slate-100 shadow-sm select-none"
+            @touchstart.passive="handleTouchStart"
+            @touchend.passive="handleTouchEnd"
           >
-            <Layers class="h-3.5 w-3.5 text-indigo-300" />
-            <span>{{ activeSlide + 1 }} / {{ galleryImages.length }}</span>
+            <!-- Gambar Utama dengan Crossfade & Subtle Zoom -->
+            <img
+              v-for="(imgUrl, idx) in galleryImages"
+              :key="`${product.id}-${idx}`"
+              :src="imgUrl"
+              :alt="`${product.name} - Foto ${idx + 1}`"
+              :class="[
+                'absolute inset-0 h-full w-full object-cover transition-all duration-500 ease-out',
+                idx === activeSlide
+                  ? 'scale-100 opacity-100'
+                  : 'pointer-events-none scale-105 opacity-0',
+              ]"
+            />
+
+            <!-- Indikator Jumlah Foto di Kanan Atas -->
+            <div
+              v-if="hasMultipleImages"
+              class="absolute right-4 top-4 inline-flex items-center gap-1.5 rounded-full bg-slate-900/75 px-3 py-1.5 text-xs font-bold text-white backdrop-blur-md"
+            >
+              <Layers class="h-3.5 w-3.5 text-indigo-300" />
+              <span>{{ activeSlide + 1 }} / {{ galleryImages.length }}</span>
+            </div>
+
+            <!-- Navigasi Panah & Bar Progres -->
+            <template v-if="hasMultipleImages">
+              <button
+                type="button"
+                @click="prevSlide"
+                aria-label="Foto sebelumnya"
+                class="absolute left-4 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/90 text-slate-800 shadow-lg backdrop-blur-md transition hover:scale-110 hover:bg-white"
+              >
+                <ChevronLeft class="h-5 w-5" />
+              </button>
+
+              <button
+                type="button"
+                @click="nextSlide"
+                aria-label="Foto berikutnya"
+                class="absolute right-4 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/90 text-slate-800 shadow-lg backdrop-blur-md transition hover:scale-110 hover:bg-white"
+              >
+                <ChevronRight class="h-5 w-5" />
+              </button>
+
+              <!-- Bar Progres Bawah -->
+              <div class="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-slate-950/50 to-transparent" />
+              <div class="absolute inset-x-5 bottom-4 flex items-center gap-2">
+                <button
+                  v-for="(_, idx) in galleryImages"
+                  :key="idx"
+                  type="button"
+                  @click="activeSlide = idx"
+                  :aria-label="`Pilih foto ${idx + 1}`"
+                  class="flex-1 py-1"
+                >
+                  <span
+                    :class="[
+                      'block h-1.5 w-full rounded-full transition-all duration-300',
+                      idx === activeSlide ? 'bg-white shadow-xs' : 'bg-white/40 hover:bg-white/75',
+                    ]"
+                  />
+                </button>
+              </div>
+            </template>
           </div>
 
-          <!-- Navigasi Panah & Bar Progres -->
-          <template v-if="hasMultipleImages">
+          <!-- Bar Thumbnail Foto -->
+          <div v-if="hasMultipleImages" class="flex gap-3 overflow-x-auto pb-1">
             <button
+              v-for="(thumb, idx) in galleryImages"
+              :key="idx"
               type="button"
-              @click="prevSlide"
-              aria-label="Foto sebelumnya"
-              class="absolute left-4 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/90 text-slate-800 shadow-lg backdrop-blur-md transition hover:scale-110 hover:bg-white"
-            >
-              <ChevronLeft class="h-5 w-5" />
-            </button>
-
-            <button
-              type="button"
-              @click="nextSlide"
-              aria-label="Foto berikutnya"
-              class="absolute right-4 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/90 text-slate-800 shadow-lg backdrop-blur-md transition hover:scale-110 hover:bg-white"
-            >
-              <ChevronRight class="h-5 w-5" />
-            </button>
-
-            <!-- Bar Progres Bawah -->
-            <div class="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-slate-950/50 to-transparent" />
-            <div class="absolute inset-x-5 bottom-4 flex items-center gap-2">
-              <button
-                v-for="(_, idx) in galleryImages"
-                :key="idx"
-                type="button"
-                @click="activeSlide = idx"
-                :aria-label="`Pilih foto ${idx + 1}`"
-                class="flex-1 py-1"
-              >
-                <span
-                  :class="[
-                    'block h-1.5 w-full rounded-full transition-all duration-300',
-                    idx === activeSlide ? 'bg-white shadow-xs' : 'bg-white/40 hover:bg-white/75',
-                  ]"
-                />
-              </button>
-            </div>
-          </template>
-        </div>
-
-        <!-- Bar Thumbnail Foto -->
-        <div v-if="hasMultipleImages" class="flex gap-3 overflow-x-auto pb-1">
-          <button
-            v-for="(thumb, idx) in galleryImages"
-            :key="idx"
-            type="button"
-            @click="activeSlide = idx"
-            :class="[
-              'relative h-20 w-20 shrink-0 overflow-hidden rounded-2xl border-2 transition-all',
-              idx === activeSlide
-                ? 'scale-105 border-indigo-600 ring-4 ring-indigo-100'
-                : 'border-slate-200 opacity-65 hover:opacity-100',
-            ]"
-          >
-            <img :src="thumb" :alt="`Thumbnail ${idx + 1}`" class="h-full w-full object-cover" />
-          </button>
-        </div>
-      </div>
-
-      <!-- Kanan: Informasi & Aksi -->
-      <div class="space-y-6">
-        <div class="flex flex-wrap items-center gap-3">
-          <span class="rounded-full bg-indigo-50 px-3.5 py-1 text-xs font-bold text-indigo-700">
-            {{ product.category }}
-          </span>
-          <span
-            v-if="product.badge"
-            class="rounded-full bg-rose-600 px-3.5 py-1 text-xs font-bold text-white shadow-xs"
-          >
-            {{ product.badge }}
-          </span>
-        </div>
-
-        <div>
-          <h1 class="text-3xl font-extrabold capitalize tracking-tight text-slate-900 sm:text-4xl">
-            {{ product.name }}
-          </h1>
-
-          <div class="mt-3 flex flex-wrap items-center gap-4 text-sm">
-            <div class="flex items-center gap-1 font-bold text-amber-500">
-              <Star class="h-4 w-4 fill-amber-400" />
-              <span>{{ product.rating ?? 5.0 }}</span>
-            </div>
-            <span class="text-slate-300">|</span>
-            <span class="text-slate-600">{{ product.reviewsCount ?? 0 }} Ulasan</span>
-            <span class="text-slate-300">|</span>
-            <span
+              @click="activeSlide = idx"
               :class="[
-                'font-semibold',
-                product.stock > 0 ? 'text-emerald-600' : 'text-rose-600',
+                'relative h-20 w-20 shrink-0 overflow-hidden rounded-2xl border-2 transition-all',
+                idx === activeSlide
+                  ? 'scale-105 border-indigo-600 ring-4 ring-indigo-100'
+                  : 'border-slate-200 opacity-65 hover:opacity-100',
               ]"
             >
-              {{ product.stock > 0 ? `Stok tersedia (${product.stock})` : 'Stok habis' }}
-            </span>
+              <img :src="thumb" :alt="`Thumbnail ${idx + 1}`" class="h-full w-full object-cover" />
+            </button>
           </div>
         </div>
 
-        <!-- Harga & Diskon -->
-        <div class="border-y border-slate-200 py-5">
-          <div
-            v-if="product.originalPrice && product.originalPrice > product.price"
-            class="mb-1 flex items-center gap-2"
-          >
-            <span class="text-sm text-slate-400 line-through">
-              {{ formatRupiah(product.originalPrice) }}
+        <!-- Kanan: Informasi & Aksi -->
+        <div class="space-y-6">
+          <div class="flex flex-wrap items-center gap-3">
+            <span class="rounded-full bg-indigo-50 px-3.5 py-1 text-xs font-bold text-indigo-700">
+              {{ product.category }}
             </span>
             <span
-              v-if="product.discount"
-              class="rounded-lg bg-rose-100 px-2 py-0.5 text-xs font-extrabold text-rose-600"
+              v-if="product.badge"
+              class="rounded-full bg-rose-600 px-3.5 py-1 text-xs font-bold text-white shadow-xs"
             >
-              Hemat {{ product.discount }}%
+              {{ product.badge }}
             </span>
           </div>
-          <p class="text-3xl font-extrabold text-indigo-600">
-            {{ formatRupiah(product.price) }}
-          </p>
-        </div>
 
-        <p class="leading-relaxed text-slate-600">
-          {{ product.description || 'Produk berkualitas tinggi dengan garansi resmi.' }}
-        </p>
+          <div>
+            <h1 class="text-3xl font-extrabold capitalize tracking-tight text-slate-900 sm:text-4xl">
+              {{ product.name }}
+            </h1>
 
-        <!-- Spesifikasi Utama -->
-        <div v-if="product.specs && product.specs.length > 0">
-          <h3 class="text-sm font-bold uppercase tracking-wider text-slate-900">Spesifikasi Utama</h3>
-          <ul class="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-            <li
-              v-for="spec in product.specs"
-              :key="spec"
-              class="flex items-center gap-2 text-sm text-slate-700"
-            >
-              <span class="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
-                <Check class="h-3.5 w-3.5" />
-              </span>
-              <span>{{ spec }}</span>
-            </li>
-          </ul>
-        </div>
-
-        <!-- Pilih Jumlah & Tombol Beli -->
-        <div class="space-y-4 pt-2">
-          <div class="flex items-center gap-4">
-            <span class="text-sm font-semibold text-slate-700">Jumlah:</span>
-            <div class="flex items-center rounded-xl border border-slate-300 bg-white">
-              <button
-                type="button"
-                @click="quantity = Math.max(1, quantity - 1)"
-                class="p-2.5 text-slate-600 hover:text-indigo-600"
+            <div class="mt-3 flex flex-wrap items-center gap-4 text-sm">
+              <div class="flex items-center gap-1 font-bold text-amber-500">
+                <Star class="h-4 w-4 fill-amber-400" />
+                <span>{{ displayedRating }}</span>
+              </div>
+              <span class="text-slate-300">|</span>
+              <a href="#ulasan-pembeli" class="text-slate-600 hover:text-indigo-600">
+                {{ totalReviewsCount }} Ulasan
+              </a>
+              <span class="text-slate-300">|</span>
+              <span
+                :class="[
+                  'font-semibold',
+                  product.stock > 0 ? 'text-emerald-600' : 'text-rose-600',
+                ]"
               >
-                <Minus class="h-4 w-4" />
-              </button>
-              <span class="w-10 text-center text-sm font-bold text-slate-900">{{ quantity }}</span>
+                {{ product.stock > 0 ? `Stok tersedia (${product.stock})` : 'Stok habis' }}
+              </span>
+            </div>
+          </div>
+
+          <!-- Harga & Diskon -->
+          <div class="border-y border-slate-200 py-5">
+            <div
+              v-if="product.originalPrice && product.originalPrice > product.price"
+              class="mb-1 flex items-center gap-2"
+            >
+              <span class="text-sm text-slate-400 line-through">
+                {{ formatRupiah(product.originalPrice) }}
+              </span>
+              <span
+                v-if="product.discount"
+                class="rounded-lg bg-rose-100 px-2 py-0.5 text-xs font-extrabold text-rose-600"
+              >
+                Hemat {{ product.discount }}%
+              </span>
+            </div>
+            <p class="text-3xl font-extrabold text-indigo-600">
+              {{ formatRupiah(product.price) }}
+            </p>
+          </div>
+
+          <p class="leading-relaxed text-slate-600">
+            {{ product.description || 'Produk berkualitas tinggi dengan garansi resmi.' }}
+          </p>
+
+          <!-- Spesifikasi Utama -->
+          <div v-if="product.specs && product.specs.length > 0">
+            <h3 class="text-sm font-bold uppercase tracking-wider text-slate-900">Spesifikasi Utama</h3>
+            <ul class="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+              <li
+                v-for="spec in product.specs"
+                :key="spec"
+                class="flex items-center gap-2 text-sm text-slate-700"
+              >
+                <span class="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
+                  <Check class="h-3.5 w-3.5" />
+                </span>
+                <span>{{ spec }}</span>
+              </li>
+            </ul>
+          </div>
+
+          <!-- Pilih Jumlah & Tombol Beli -->
+          <div class="space-y-4 pt-2">
+            <div class="flex items-center gap-4">
+              <span class="text-sm font-semibold text-slate-700">Jumlah:</span>
+              <div class="flex items-center rounded-xl border border-slate-300 bg-white">
+                <button
+                  type="button"
+                  @click="quantity = Math.max(1, quantity - 1)"
+                  class="p-2.5 text-slate-600 hover:text-indigo-600"
+                >
+                  <Minus class="h-4 w-4" />
+                </button>
+                <span class="w-10 text-center text-sm font-bold text-slate-900">{{ quantity }}</span>
+                <button
+                  type="button"
+                  :disabled="product.stock <= 0"
+                  @click="quantity = Math.min(product.stock, quantity + 1)"
+                  class="p-2.5 text-slate-600 hover:text-indigo-600 disabled:opacity-40"
+                >
+                  <Plus class="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+
+            <div class="flex flex-col gap-3 sm:flex-row">
               <button
                 type="button"
                 :disabled="product.stock <= 0"
-                @click="quantity = Math.min(product.stock, quantity + 1)"
-                class="p-2.5 text-slate-600 hover:text-indigo-600 disabled:opacity-40"
+                @click="handleAddCart"
+                class="flex flex-1 items-center justify-center gap-2 rounded-xl border-2 border-indigo-600 bg-white px-6 py-3.5 text-sm font-bold text-indigo-600 transition hover:bg-indigo-50 active:scale-98 disabled:cursor-not-allowed disabled:border-slate-300 disabled:text-slate-400"
               >
-                <Plus class="h-4 w-4" />
+                <ShoppingCart class="h-4 w-4" />
+                <span>Masukkan Keranjang</span>
+              </button>
+              <button
+                type="button"
+                :disabled="product.stock <= 0"
+                @click="handleBuyNow"
+                class="flex flex-1 items-center justify-center rounded-xl bg-indigo-600 px-6 py-3.5 text-sm font-bold text-white shadow-lg shadow-indigo-600/20 transition hover:bg-indigo-700 active:scale-98 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
+              >
+                {{ product.stock > 0 ? 'Beli Langsung' : 'Stok Habis' }}
               </button>
             </div>
           </div>
 
-          <div class="flex flex-col gap-3 sm:flex-row">
-            <button
-              type="button"
-              :disabled="product.stock <= 0"
-              @click="handleAddCart"
-              class="flex flex-1 items-center justify-center gap-2 rounded-xl border-2 border-indigo-600 bg-white px-6 py-3.5 text-sm font-bold text-indigo-600 transition hover:bg-indigo-50 active:scale-98 disabled:cursor-not-allowed disabled:border-slate-300 disabled:text-slate-400"
-            >
-              <ShoppingCart class="h-4 w-4" />
-              <span>Masukkan Keranjang</span>
-            </button>
-            <button
-              type="button"
-              :disabled="product.stock <= 0"
-              @click="handleBuyNow"
-              class="flex flex-1 items-center justify-center rounded-xl bg-indigo-600 px-6 py-3.5 text-sm font-bold text-white shadow-lg shadow-indigo-600/20 transition hover:bg-indigo-700 active:scale-98 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
-            >
-              {{ product.stock > 0 ? 'Beli Langsung' : 'Stok Habis' }}
-            </button>
-          </div>
-        </div>
-
-        <!-- Garansi -->
-        <div class="grid grid-cols-2 gap-4 rounded-2xl bg-slate-50 p-4 text-xs text-slate-600">
-          <div class="flex items-center gap-2.5">
-            <Truck class="h-5 w-5 shrink-0 text-indigo-600" />
-            <span>Gratis pengiriman instan & asuransi paket</span>
-          </div>
-          <div class="flex items-center gap-2.5">
-            <ShieldCheck class="h-5 w-5 shrink-0 text-indigo-600" />
-            <span>100% Original & Garansi Resmi 2 Tahun</span>
+          <!-- Garansi -->
+          <div class="grid grid-cols-2 gap-4 rounded-2xl bg-slate-50 p-4 text-xs text-slate-600">
+            <div class="flex items-center gap-2.5">
+              <Truck class="h-5 w-5 shrink-0 text-indigo-600" />
+              <span>Gratis pengiriman instan & asuransi paket</span>
+            </div>
+            <div class="flex items-center gap-2.5">
+              <ShieldCheck class="h-5 w-5 shrink-0 text-indigo-600" />
+              <span>100% Original & Garansi Resmi 2 Tahun</span>
+            </div>
           </div>
         </div>
       </div>
+
+      <!-- Bagian Ulasan & Rating Pembeli (Hanya Tampilan / Read-Only) -->
+      <section
+        id="ulasan-pembeli"
+        class="rounded-3xl border border-slate-200 bg-white p-6 shadow-xs sm:p-8"
+      >
+        <div class="flex flex-wrap items-center justify-between gap-4 border-b border-slate-100 pb-5">
+          <div class="flex items-center gap-3">
+            <div class="flex h-11 w-11 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-600">
+              <MessageSquare class="h-5 w-5" />
+            </div>
+            <div>
+              <h2 class="text-lg font-extrabold text-slate-900">Ulasan Pembeli</h2>
+              <p class="text-xs text-slate-500">
+                Penilaian asli dari pembeli yang telah menerima produk ini.
+              </p>
+            </div>
+          </div>
+
+          <div class="flex items-center gap-3 rounded-2xl border border-amber-200 bg-amber-50/70 px-4 py-2.5">
+            <div class="flex items-center gap-1">
+              <Star class="h-5 w-5 fill-amber-400 text-amber-400" />
+              <span class="text-lg font-extrabold text-slate-900">{{ displayedRating }}</span>
+              <span class="text-xs font-medium text-slate-500">/ 5.0</span>
+            </div>
+            <span class="text-slate-300">•</span>
+            <span class="text-xs font-bold text-slate-700">{{ productReviews.length }} Ulasan</span>
+          </div>
+        </div>
+
+        <div v-if="productReviews.length === 0" class="py-12 text-center">
+          <p class="text-sm font-semibold text-slate-600">Belum ada ulasan untuk produk ini.</p>
+          <p class="mt-1 text-xs text-slate-400">
+            Ulasan akan muncul setelah pembeli menyelesaikan pesanan dan memberikan penilaian.
+          </p>
+        </div>
+
+        <div v-else class="divide-y divide-slate-100">
+          <article
+            v-for="rev in productReviews"
+            :key="rev.id"
+            class="flex flex-col gap-3 py-5 first:pt-5 last:pb-0 sm:flex-row sm:items-start sm:gap-4"
+          >
+            <!-- Avatar Inisial Pemberi Komentar -->
+            <div
+              class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-indigo-100 text-xs font-extrabold text-indigo-700"
+            >
+              {{ getInitials(rev.customerName) }}
+            </div>
+
+            <div class="min-w-0 flex-1">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span class="text-sm font-bold text-slate-900">{{ rev.customerName }}</span>
+                    <span class="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">
+                      <CheckCircle2 class="h-3 w-3" />
+                      Pembeli Terverifikasi
+                    </span>
+                  </div>
+
+                  <div class="mt-1 flex items-center gap-1">
+                    <Star
+                      v-for="s in 5"
+                      :key="s"
+                      :class="[
+                        'h-3.5 w-3.5',
+                        s <= rev.rating ? 'fill-amber-400 text-amber-400' : 'text-slate-200',
+                      ]"
+                    />
+                    <span class="ml-1 text-xs font-bold text-slate-700">{{ rev.rating }}.0</span>
+                  </div>
+                </div>
+
+                <span class="text-xs text-slate-400">{{ formatReviewDate(rev.createdAt) }}</span>
+              </div>
+
+              <p class="mt-2.5 rounded-2xl border border-slate-100 bg-slate-50/80 px-4 py-3 text-sm leading-relaxed text-slate-700">
+                {{ rev.comment }}
+              </p>
+            </div>
+          </article>
+        </div>
+      </section>
     </div>
   </div>
 </template>

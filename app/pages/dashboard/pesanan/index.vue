@@ -9,7 +9,7 @@ import {
   CreditCard,
   Loader2,
   XCircle,
-  Trash2,
+  Ban,
   RefreshCw,
 } from 'lucide-vue-next'
 
@@ -37,6 +37,7 @@ interface DbOrder {
   discountAmount: number
   grandTotal: number
   status: 'pending' | 'paid' | 'failed' | 'shipped' | 'delivered'
+  statusPengiriman?: string
   paymentMethod: string | null
   snapToken: string | null
   createdAt: string
@@ -45,11 +46,12 @@ interface DbOrder {
 
 const config = useRuntimeConfig()
 const { formatRupiah, showToast } = useStore()
+const { confirmDialog } = useConfirm()
 
 const { data: ordersData, pending: isLoadingOrders, refresh } = await useFetch<DbOrder[]>('/api/orders')
 const orders = computed(() => ordersData.value ?? [])
 
-const selectedFilter = ref<'all' | 'pending' | 'paid' | 'shipped' | 'delivered'>('all')
+const selectedFilter = ref<'all' | 'pending' | 'paid' | 'shipped' | 'delivered' | 'failed'>('all')
 const payingOrderNumber = ref<string | null>(null)
 const cancellingOrderNumber = ref<string | null>(null)
 const changingMethodOrderNumber = ref<string | null>(null)
@@ -91,6 +93,15 @@ const ensureMidtransSnap = (): Promise<any> => {
   })
 }
 
+const getEffectiveStatus = (order: DbOrder): DbOrder['status'] => {
+  if (order.status === 'failed') return 'failed'
+  if (order.status === 'pending') return 'pending'
+  const ship = String(order.statusPengiriman || '').toLowerCase()
+  if (ship === 'delivered' || order.status === 'delivered') return 'delivered'
+  if (ship === 'shipped' || order.status === 'shipped') return 'shipped'
+  return 'paid'
+}
+
 const statusMeta: Record<
   DbOrder['status'],
   { label: string; badgeClass: string; icon: any }
@@ -116,7 +127,7 @@ const statusMeta: Record<
     icon: CheckCircle2,
   },
   failed: {
-    label: 'Pembayaran Gagal',
+    label: 'Dibatalkan / Gagal',
     badgeClass: 'border-rose-200 bg-rose-50 text-rose-700',
     icon: XCircle,
   },
@@ -127,28 +138,33 @@ const filterTabs = computed(() => [
   {
     id: 'pending' as const,
     label: 'Belum Bayar',
-    count: orders.value.filter((o) => o.status === 'pending').length,
+    count: orders.value.filter((o) => getEffectiveStatus(o) === 'pending').length,
   },
   {
     id: 'paid' as const,
     label: 'Sudah Dibayar',
-    count: orders.value.filter((o) => o.status === 'paid').length,
+    count: orders.value.filter((o) => getEffectiveStatus(o) === 'paid').length,
   },
   {
     id: 'shipped' as const,
     label: 'Dikirim',
-    count: orders.value.filter((o) => o.status === 'shipped').length,
+    count: orders.value.filter((o) => getEffectiveStatus(o) === 'shipped').length,
   },
   {
     id: 'delivered' as const,
-    label: 'Selesai',
-    count: orders.value.filter((o) => o.status === 'delivered').length,
+    label: 'Sudah Sampai',
+    count: orders.value.filter((o) => getEffectiveStatus(o) === 'delivered').length,
+  },
+  {
+    id: 'failed' as const,
+    label: 'Dibatalkan',
+    count: orders.value.filter((o) => getEffectiveStatus(o) === 'failed').length,
   },
 ])
 
 const filteredOrders = computed(() => {
   if (selectedFilter.value === 'all') return orders.value
-  return orders.value.filter((o) => o.status === selectedFilter.value)
+  return orders.value.filter((o) => getEffectiveStatus(o) === selectedFilter.value)
 })
 
 const formatDate = (iso: string) => {
@@ -161,18 +177,25 @@ const formatDate = (iso: string) => {
   })
 }
 
-// 1. Batalkan & hapus pesanan berstatus pending (sekalian cancel di Midtrans)
+// 1. Batalkan pesanan berstatus pending (stok dikembalikan, riwayat pesanan tetap tersimpan sebagai 'failed')
 const handleCancelOrder = async (orderNumber: string) => {
-  if (!confirm(`Batalkan pesanan ${orderNumber}? Tagihan Midtrans akan dibatalkan dan pesanan dihapus.`)) {
-    return
-  }
+  const isConfirmed = await confirmDialog({
+    title: `Batalkan Pesanan ${orderNumber}?`,
+    description:
+      'Tagihan Midtrans akan dibatalkan, stok produk dikembalikan, dan status pesanan berubah menjadi Dibatalkan.',
+    confirmText: 'Ya, Batalkan',
+    cancelText: 'Kembali',
+    variant: 'danger',
+  })
+
+  if (!isConfirmed) return
 
   cancellingOrderNumber.value = orderNumber
   try {
     await $fetch(`/api/orders/${encodeURIComponent(orderNumber)}`, {
       method: 'DELETE',
     })
-    showToast(`Pesanan ${orderNumber} berhasil dibatalkan & dihapus.`)
+    showToast(`Pesanan ${orderNumber} berhasil dibatalkan & stok telah dikembalikan.`)
     await refresh()
   } catch (err: any) {
     showToast(err?.data?.statusMessage || err?.message || 'Gagal membatalkan pesanan.')
@@ -181,7 +204,7 @@ const handleCancelOrder = async (orderNumber: string) => {
   }
 }
 
-// 2. Ganti metode pembayaran (cancel invoice lama di Midtrans & buka pilihan baru)
+// 2. Ganti metode pembayaran
 const handleChangePaymentMethod = async (order: DbOrder) => {
   changingMethodOrderNumber.value = order.orderNumber
   try {
@@ -319,7 +342,7 @@ const handlePayNow = async (order: DbOrder) => {
 const confirmOrderDelivered = async (orderNumber: string) => {
   await $fetch('/api/orders', {
     method: 'POST',
-    body: { orderNumber, status: 'delivered' },
+    body: { orderNumber, statusPengiriman: 'delivered' },
   })
   showToast(`Pesanan ${orderNumber} dikonfirmasi sudah sampai!`)
   await refresh()
@@ -402,11 +425,11 @@ const confirmOrderDelivered = async (orderNumber: string) => {
           <span
             :class="[
               'inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-bold',
-              statusMeta[order.status]?.badgeClass || statusMeta.pending.badgeClass,
+              statusMeta[getEffectiveStatus(order)]?.badgeClass || statusMeta.pending.badgeClass,
             ]"
           >
-            <component :is="statusMeta[order.status]?.icon || Clock" class="h-3.5 w-3.5" />
-            <span>{{ statusMeta[order.status]?.label || order.status }}</span>
+            <component :is="statusMeta[getEffectiveStatus(order)]?.icon || Clock" class="h-3.5 w-3.5" />
+            <span>{{ statusMeta[getEffectiveStatus(order)]?.label || order.status }}</span>
           </span>
         </div>
 
@@ -465,7 +488,7 @@ const confirmOrderDelivered = async (orderNumber: string) => {
                 class="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2 text-xs font-bold text-rose-600 transition hover:bg-rose-100 disabled:opacity-50"
               >
                 <Loader2 v-if="cancellingOrderNumber === order.orderNumber" class="h-3.5 w-3.5 animate-spin" />
-                <Trash2 v-else class="h-3.5 w-3.5" />
+                <Ban v-else class="h-3.5 w-3.5" />
                 <span>{{ cancellingOrderNumber === order.orderNumber ? 'Membatalkan...' : 'Batalkan' }}</span>
               </button>
 
@@ -501,7 +524,7 @@ const confirmOrderDelivered = async (orderNumber: string) => {
             </template>
 
             <button
-              v-if="order.status === 'shipped'"
+              v-if="getEffectiveStatus(order) === 'shipped'"
               type="button"
               @click="confirmOrderDelivered(order.orderNumber)"
               class="rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white shadow-xs transition hover:bg-emerald-700"

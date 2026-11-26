@@ -12,8 +12,12 @@ import {
   MessageSquare,
   Loader2,
   XCircle,
+  Copy,
+  ReceiptText,
 } from 'lucide-vue-next'
-import type { Product } from '~/composables/useStore'
+
+type PaymentStatus = 'pending' | 'paid' | 'failed'
+type ShippingStatus = 'pending' | 'packed' | 'shipped' | 'delivered'
 
 interface DbOrderItem {
   id: number
@@ -39,26 +43,86 @@ interface DbOrder {
   insuranceCost: number
   discountAmount: number
   grandTotal: number
-  status: 'pending' | 'paid' | 'failed' | 'shipped' | 'delivered'
+  status: string
+  statusPengiriman?: string
   paymentMethod: string | null
   snapToken: string | null
   createdAt: string
+  updatedAt?: string
   items: DbOrderItem[]
+}
+
+interface DbRating {
+  id: number
+  orderId: number
+  productName: string
 }
 
 const route = useRoute()
 const config = useRuntimeConfig()
 const { formatRupiah, showToast } = useStore()
-const { submitProductReview } = useAccount()
+const { confirmDialog } = useConfirm()
 
-const { data: ordersData, pending: isLoading, refresh } = await useFetch<DbOrder[]>('/api/orders')
+const { data: ordersData, pending: isLoading, refresh } = await useFetch<DbOrder[]>('/api/orders', {
+  default: () => [],
+})
+
+const { data: userRatings, refresh: refreshRatings } = await useFetch<DbRating[]>(
+  '/api/user/ratings',
+  { default: () => [] }
+)
 
 const order = computed(() =>
   (ordersData.value ?? []).find((o) => o.orderNumber === String(route.params.id))
 )
 
+// Normalisasi status pembayaran dari kolom `status`
+const normalizedPayment = computed<PaymentStatus>(() => {
+  const s = String(order.value?.status || 'pending').trim().toLowerCase()
+  if (s === 'failed' || s === 'cancel' || s === 'cancelled' || s === 'gagal' || s === 'dibatalkan') {
+    return 'failed'
+  }
+  if (s === 'paid' || s === 'settlement' || s === 'capture' || s === 'shipped' || s === 'delivered' || s === 'lunas') {
+    return 'paid'
+  }
+  return 'pending'
+})
+
+// Normalisasi status pengiriman dari kolom `statusPengiriman` (fallback ke `status` jika data lama)
+const normalizedShipping = computed<ShippingStatus>(() => {
+  const rawShip = String(order.value?.statusPengiriman || '').trim().toLowerCase()
+  const rawOrder = String(order.value?.status || '').trim().toLowerCase()
+  const source = rawShip || rawOrder
+
+  if (source === 'delivered' || source === 'sudah sampai' || source === 'sampai' || source === 'selesai') {
+    return 'delivered'
+  }
+  if (source === 'shipped' || source === 'dikirim' || source === 'dalam perjalanan' || source === 'dalam pengiriman') {
+    return 'shipped'
+  }
+  if (source === 'packed' || source === 'dikemas' || source === 'sedang dikemas') {
+    return 'packed'
+  }
+  return 'pending'
+})
+
 const isPaying = ref(false)
-const ratedItemIds = ref<number[]>([])
+const isConfirmingDelivered = ref(false)
+
+// Cek item mana saja di order ini yang sudah dinilai di database
+const ratedProductNames = computed(() => {
+  const set = new Set<string>()
+  if (!order.value) return set
+  for (const r of userRatings.value ?? []) {
+    if (r.orderId === order.value.id) {
+      set.add(String(r.productName || '').trim().toLowerCase())
+    }
+  }
+  return set
+})
+
+const isItemRated = (item: DbOrderItem) =>
+  ratedProductNames.value.has(String(item.productName || '').trim().toLowerCase())
 
 // Muat script Midtrans Snap
 const snapScriptUrl = computed(() =>
@@ -97,94 +161,133 @@ const ensureMidtransSnap = (): Promise<any> => {
   })
 }
 
-const statusMeta: Record<
-  DbOrder['status'],
-  { label: string; badgeClass: string; icon: any; step: number; description: string }
-> = {
+const paymentBadgeMeta: Record<PaymentStatus, { label: string; badgeClass: string; icon: any }> = {
   pending: {
     label: 'Menunggu Pembayaran',
     badgeClass: 'border-amber-200 bg-amber-50 text-amber-700',
     icon: Clock,
-    step: 1,
-    description: 'Pesanan telah dibuat. Segera selesaikan pembayaran melalui Midtrans agar pesanan dapat diproses.',
   },
   paid: {
-    label: 'Sudah Dibayar & Diproses',
+    label: 'Sudah Dibayar',
     badgeClass: 'border-indigo-200 bg-indigo-50 text-indigo-700',
+    icon: CheckCircle2,
+  },
+  failed: {
+    label: 'Pembayaran Gagal / Batal',
+    badgeClass: 'border-rose-200 bg-rose-50 text-rose-700',
+    icon: XCircle,
+  },
+}
+
+const shippingBadgeMeta: Record<
+  ShippingStatus,
+  { label: string; badgeClass: string; icon: any; step: number; description: string }
+> = {
+  pending: {
+    label: 'Menunggu Pengiriman',
+    badgeClass: 'border-slate-200 bg-slate-100 text-slate-700',
+    icon: Clock,
+    step: 1,
+    description:
+      'Pesanan menunggu verifikasi pembayaran & penjadwalan pengiriman oleh penjual.',
+  },
+  packed: {
+    label: 'Sedang Dikemas',
+    badgeClass: 'border-violet-200 bg-violet-50 text-violet-700',
     icon: Package,
     step: 2,
-    description: 'Pembayaran telah diterima. Pesanan sedang dikemas oleh tim gudang Jakarta Timur.',
+    description:
+      'Pembayaran sudah diterima. Tim gudang sedang menyiapkan dan mengemas paketmu.',
   },
   shipped: {
     label: 'Dalam Perjalanan',
     badgeClass: 'border-sky-200 bg-sky-50 text-sky-700',
     icon: Truck,
     step: 3,
-    description: 'Paket sedang dalam perjalanan menuju alamat pengirimanmu.',
+    description:
+      'Paket sudah diserahkan ke kurir ekspedisi dan sedang dalam perjalanan ke alamatmu.',
   },
   delivered: {
     label: 'Sudah Sampai',
     badgeClass: 'border-emerald-200 bg-emerald-50 text-emerald-700',
     icon: CheckCircle2,
     step: 4,
-    description: 'Pesanan telah tiba di alamat tujuan.',
-  },
-  failed: {
-    label: 'Pembayaran Gagal',
-    badgeClass: 'border-rose-200 bg-rose-50 text-rose-700',
-    icon: XCircle,
-    step: 1,
-    description: 'Pembayaran gagal atau kedaluwarsa. Silakan ulangi transaksi.',
+    description:
+      'Pesanan telah sampai di alamat tujuan. Kamu sekarang bisa memberikan penilaian produk.',
   },
 }
 
-const formatDate = (iso: string) => {
-  return new Date(iso).toLocaleDateString('id-ID', {
+const formatDate = (iso: string) =>
+  new Date(iso).toLocaleDateString('id-ID', {
     day: 'numeric',
     month: 'long',
     year: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
   })
+
+const copyShippingNotes = () => {
+  if (!order.value?.shippingNotes) return
+  navigator.clipboard?.writeText(order.value.shippingNotes)
+  showToast('Nomor resi / catatan pengiriman disalin!')
 }
 
+// Timeline status jelas berdasarkan kolom `status` (pembayaran) dan `statusPengiriman` (pengiriman)
 const trackingLogs = computed(() => {
   if (!order.value) return []
   const current = order.value
-  const isPaidOrFurther = ['paid', 'shipped', 'delivered'].includes(current.status)
+  const pay = normalizedPayment.value
+  const ship = normalizedShipping.value
+
+  const isPaid = pay === 'paid'
+  const isPackedOrMore = ['packed', 'shipped', 'delivered'].includes(ship)
+  const isShippedOrMore = ['shipped', 'delivered'].includes(ship)
+  const isDelivered = ship === 'delivered'
 
   const items = [
     {
-      title: 'Pesanan Dibuat',
-      desc: 'Pesanan berhasil tercatat di sistem NexaStore.',
-      time: formatDate(current.createdAt),
+      title: '1. Pesanan Dibuat',
+      desc: `Invoice ${current.orderNumber} berhasil dibuat.`,
+      badge: formatDate(current.createdAt),
       done: true,
     },
     {
-      title: isPaidOrFurther ? 'Pembayaran Dikonfirmasi' : 'Menunggu Pembayaran',
-      desc: isPaidOrFurther
-        ? `Pembayaran lunas via ${current.paymentMethod || 'Midtrans'}.`
-        : 'Klik tombol Bayar Sekarang untuk menyelesaikan transaksi.',
-      time: isPaidOrFurther ? 'Lunas' : 'Belum Bayar',
-      done: isPaidOrFurther,
+      title: pay === 'failed' ? '2. Pembayaran Gagal / Dibatalkan' : '2. Status Pembayaran',
+      desc: isPaid
+        ? `Pembayaran telah lunas melalui ${current.paymentMethod || 'Midtrans'}.`
+        : pay === 'failed'
+          ? 'Transaksi dibatalkan atau melewati batas waktu pembayaran.'
+          : 'Menunggu kamu menyelesaikan pembayaran agar pesanan diproses.',
+      badge: isPaid ? 'Lunas' : pay === 'failed' ? 'Gagal' : 'Belum Bayar',
+      done: isPaid,
     },
     {
-      title: `Pengiriman via ${current.shippingCourier}`,
-      desc:
-        current.status === 'shipped' || current.status === 'delivered'
-          ? 'Paket telah diserahkan ke kurir dan sedang menuju alamat tujuan.'
-          : 'Menunggu proses pengemasan selesai.',
-      time: current.status === 'shipped' ? 'Dalam Transit' : current.status === 'delivered' ? 'Terkirim' : '-',
-      done: current.status === 'shipped' || current.status === 'delivered',
+      title: '3. Pengemasan oleh Penjual',
+      desc: isPackedOrMore
+        ? 'Pesanan telah dikemas dan siap diserahkan ke pihak ekspedisi.'
+        : isPaid
+          ? 'Penjual akan segera memproses dan mengemas pesananmu.'
+          : 'Menunggu pembayaran selesai.',
+      badge: isPackedOrMore ? 'Selesai Dikemas' : isPaid ? 'Antrean Gudang' : 'Menunggu',
+      done: isPackedOrMore,
     },
     {
-      title: 'Pesanan Sudah Sampai',
-      desc:
-        current.status === 'delivered'
-          ? 'Paket telah diterima di alamat tujuan.'
-          : 'Menunggu paket tiba di alamat penerima.',
-      time: current.status === 'delivered' ? 'Selesai' : '-',
-      done: current.status === 'delivered',
+      title: `4. Pengiriman (${current.shippingCourier || 'Kurir'})`,
+      desc: isShippedOrMore
+        ? current.shippingNotes
+          ? `Paket dikirim dengan keterangan/resi: ${current.shippingNotes}`
+          : 'Paket sedang dibawa oleh kurir menuju alamat penerima.'
+        : 'Nomor resi akan tampil di sini setelah paket dikirim oleh penjual.',
+      badge: isDelivered ? 'Terkirim' : ship === 'shipped' ? 'Dalam Perjalanan' : 'Belum Dikirim',
+      done: isShippedOrMore,
+    },
+    {
+      title: '5. Pesanan Sudah Sampai',
+      desc: isDelivered
+        ? 'Paket telah sampai di tujuan. Terima kasih telah berbelanja!'
+        : 'Konfirmasi setelah paket kamu terima di alamat tujuan.',
+      badge: isDelivered ? 'Sudah Sampai' : 'Menunggu Tiba',
+      done: isDelivered,
     },
   ]
 
@@ -274,23 +377,45 @@ const handlePayNow = async () => {
   }
 }
 
+// Konfirmasi pesanan sudah sampai -> update kolom statusPengiriman ke 'delivered'
 const confirmOrderDelivered = async () => {
   if (!order.value) return
-  await $fetch('/api/orders', {
-    method: 'POST',
-    body: { orderNumber: order.value.orderNumber, status: 'delivered' },
+
+  const ok = await confirmDialog({
+    title: 'Konfirmasi Pesanan Sudah Sampai?',
+    description: `Pastikan paket untuk pesanan ${order.value.orderNumber} sudah kamu terima dengan baik.`,
+    confirmText: 'Ya, Sudah Sampai',
+    cancelText: 'Belum',
+    variant: 'primary',
   })
-  showToast(`Pesanan ${order.value.orderNumber} dikonfirmasi sudah sampai!`)
-  await refresh()
+  if (!ok) return
+
+  isConfirmingDelivered.value = true
+  try {
+    await $fetch('/api/orders', {
+      method: 'POST',
+      body: {
+        orderNumber: order.value.orderNumber,
+        statusPengiriman: 'delivered',
+      },
+    })
+    showToast(`Pesanan ${order.value.orderNumber} dikonfirmasi sudah sampai!`)
+    await refresh()
+  } catch (err: any) {
+    showToast(err?.data?.statusMessage || 'Gagal mengonfirmasi pesanan.')
+  } finally {
+    isConfirmingDelivered.value = false
+  }
 }
 
-// Modal Rating langsung dari Detail Pesanan
+// Modal Rating langsung dari Detail Pesanan (simpan ke DB POST /api/user/ratings)
 const ratingModal = ref<{ open: boolean; item: DbOrderItem | null }>({
   open: false,
   item: null,
 })
 const selectedStars = ref(5)
 const reviewComment = ref('')
+const isSubmittingReview = ref(false)
 
 const openRatingModal = (item: DbOrderItem) => {
   ratingModal.value = { open: true, item }
@@ -298,32 +423,35 @@ const openRatingModal = (item: DbOrderItem) => {
   reviewComment.value = ''
 }
 
-const handleSaveReview = () => {
+const handleSaveReview = async () => {
   if (!order.value || !ratingModal.value.item) return
   const item = ratingModal.value.item
 
-  const productSnapshot: Product = {
-    id: item.productId ?? item.id,
-    name: item.productName,
-    category: 'Produk NexaStore',
-    price: item.price,
-    rating: selectedStars.value,
-    reviews: 1,
-    stock: 10,
-    image: item.productImage,
-    description: '',
-    specs: [],
+  isSubmittingReview.value = true
+  try {
+    await $fetch('/api/user/ratings', {
+      method: 'POST',
+      body: {
+        orderId: order.value.id,
+        orderNumber: order.value.orderNumber,
+        productId: item.productId,
+        productName: item.productName,
+        productImage: item.productImage,
+        rating: selectedStars.value,
+        comment:
+          reviewComment.value.trim() ||
+          'Produk original, kualitas mantap dan sesuai pesanan!',
+      },
+    })
+
+    await refreshRatings()
+    ratingModal.value.open = false
+    showToast('Terima kasih! Penilaian produk berhasil dikirim.')
+  } catch (err: any) {
+    showToast(err?.data?.statusMessage || 'Gagal menyimpan penilaian.')
+  } finally {
+    isSubmittingReview.value = false
   }
-
-  submitProductReview({
-    orderId: order.value.orderNumber,
-    product: productSnapshot,
-    rating: selectedStars.value,
-    comment: reviewComment.value.trim() || 'Produk original, kualitas mantap dan sesuai pesanan!',
-  })
-
-  ratedItemIds.value.push(item.id)
-  ratingModal.value.open = false
 }
 </script>
 
@@ -364,7 +492,7 @@ const handleSaveReview = () => {
 
     <!-- Konten Detail Pesanan -->
     <template v-else>
-      <!-- 1. Kartu Header Status & Nomor Invoice -->
+      <!-- 1. Kartu Header Status Pembayaran & Pengiriman -->
       <div class="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs sm:p-6">
         <div class="flex flex-wrap items-start justify-between gap-4 border-b border-slate-100 pb-4">
           <div>
@@ -373,36 +501,50 @@ const handleSaveReview = () => {
             <p class="mt-0.5 text-xs text-slate-500">Tanggal Pemesanan: {{ formatDate(order.createdAt) }}</p>
           </div>
 
-          <span
-            :class="[
-              'inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-xs font-bold',
-              statusMeta[order.status]?.badgeClass || statusMeta.pending.badgeClass,
-            ]"
-          >
-            <component :is="statusMeta[order.status]?.icon || Clock" class="h-4 w-4" />
-            <span>{{ statusMeta[order.status]?.label || order.status }}</span>
-          </span>
+          <div class="flex flex-wrap items-center gap-2">
+            <!-- Badge Status Pembayaran -->
+            <span
+              :class="[
+                'inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-bold',
+                paymentBadgeMeta[normalizedPayment].badgeClass,
+              ]"
+            >
+              <component :is="paymentBadgeMeta[normalizedPayment].icon" class="h-3.5 w-3.5" />
+              <span>{{ paymentBadgeMeta[normalizedPayment].label }}</span>
+            </span>
+
+            <!-- Badge Status Pengiriman (dari statusPengiriman) -->
+            <span
+              :class="[
+                'inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-xs font-bold',
+                shippingBadgeMeta[normalizedShipping].badgeClass,
+              ]"
+            >
+              <component :is="shippingBadgeMeta[normalizedShipping].icon" class="h-4 w-4" />
+              <span>{{ shippingBadgeMeta[normalizedShipping].label }}</span>
+            </span>
+          </div>
         </div>
 
-        <!-- Progress Bar Status -->
+        <!-- Progress Bar Pengiriman -->
         <div class="pt-4">
           <div class="mb-2.5 flex items-center gap-2">
             <div
               v-for="step in 4"
               :key="step"
               :class="[
-                'h-2 flex-1 rounded-full',
-                step <= (statusMeta[order.status]?.step || 1) ? 'bg-indigo-600' : 'bg-slate-200',
+                'h-2 flex-1 rounded-full transition-colors',
+                step <= shippingBadgeMeta[normalizedShipping].step ? 'bg-indigo-600' : 'bg-slate-200',
               ]"
             />
           </div>
           <p class="text-xs font-medium text-slate-600">
-            {{ statusMeta[order.status]?.description }}
+            {{ shippingBadgeMeta[normalizedShipping].description }}
           </p>
 
-          <!-- Tombol Bayar Sekarang jika status masih pending -->
+          <!-- Tombol Bayar Sekarang jika pembayaran masih pending -->
           <div
-            v-if="order.status === 'pending'"
+            v-if="normalizedPayment === 'pending'"
             class="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50/70 p-4"
           >
             <div>
@@ -424,25 +566,33 @@ const handleSaveReview = () => {
             </button>
           </div>
 
-          <div v-if="order.status === 'shipped'" class="mt-4">
+          <!-- Tombol Konfirmasi Sampai jika statusPengiriman sudah 'shipped' -->
+          <div v-if="normalizedShipping === 'shipped'" class="mt-4">
             <button
               type="button"
+              :disabled="isConfirmingDelivered"
               @click="confirmOrderDelivered"
-              class="rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-bold text-white shadow-xs transition hover:bg-emerald-700"
+              class="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-bold text-white shadow-xs transition hover:bg-emerald-700 disabled:opacity-60"
             >
-              Konfirmasi Pesanan Sudah Sampai
+              <Loader2 v-if="isConfirmingDelivered" class="h-4 w-4 animate-spin" />
+              <CheckCircle2 v-else class="h-4 w-4" />
+              <span>{{ isConfirmingDelivered ? 'Memproses...' : 'Konfirmasi Pesanan Sudah Sampai' }}</span>
             </button>
           </div>
         </div>
       </div>
 
-      <!-- 2. Info Pengiriman & Alamat Penerima -->
+      <!-- 2. Info Pengiriman, Nomor Resi & Timeline -->
       <div class="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs sm:p-6">
         <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3.5">
           <div class="flex items-center gap-2 text-sm font-extrabold text-slate-900">
             <Truck class="h-4 w-4 text-indigo-600" />
-            <span>Informasi Pengiriman</span>
+            <span>Informasi Pengiriman & Resi</span>
           </div>
+
+          <span class="text-xs font-bold text-indigo-600">
+            {{ shippingBadgeMeta[normalizedShipping].label }}
+          </span>
         </div>
 
         <div class="mt-4 space-y-3 text-xs text-slate-600">
@@ -451,24 +601,49 @@ const handleSaveReview = () => {
             <span class="font-bold text-slate-900">{{ order.shippingCourier }}</span>
           </div>
 
+          <!-- Kotak Nomor Resi / Catatan Pengiriman (shippingNotes) -->
+          <div class="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5">
+            <div class="flex items-center gap-2">
+              <ReceiptText class="h-4 w-4 shrink-0 text-indigo-600" />
+              <div>
+                <span class="block text-[11px] font-semibold text-slate-500">Nomor Resi / Catatan Pengiriman</span>
+                <span
+                  :class="[
+                    'font-mono text-xs font-extrabold',
+                    order.shippingNotes ? 'text-slate-900' : 'font-sans font-normal italic text-slate-400',
+                  ]"
+                >
+                  {{ order.shippingNotes || 'Belum ada nomor resi yang diinput penjual' }}
+                </span>
+              </div>
+            </div>
+
+            <button
+              v-if="order.shippingNotes"
+              type="button"
+              @click="copyShippingNotes"
+              class="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-bold text-slate-700 transition hover:border-indigo-300 hover:text-indigo-600"
+            >
+              <Copy class="h-3.5 w-3.5" />
+              <span>Salin</span>
+            </button>
+          </div>
+
           <div class="flex items-start gap-2.5 border-t border-slate-100 pt-3">
             <MapPin class="mt-0.5 h-4 w-4 shrink-0 text-slate-400" />
             <div>
               <span class="block text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                Alamat Pengiriman
+                Alamat Penerima
               </span>
               <p class="mt-0.5 font-bold text-slate-900">
                 {{ order.customerName }} • {{ order.customerPhone }}
               </p>
               <p class="mt-0.5 leading-relaxed text-slate-600">{{ order.shippingAddress }}</p>
-              <p v-if="order.shippingNotes" class="mt-1 text-[11px] italic text-slate-500">
-                Catatan: {{ order.shippingNotes }}
-              </p>
             </div>
           </div>
         </div>
 
-        <!-- Timeline Riwayat Pengiriman -->
+        <!-- Timeline Riwayat Status Pesanan -->
         <div class="mt-5 border-t border-slate-100 pt-4">
           <div class="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-500">
             <Clock class="h-3.5 w-3.5 text-indigo-600" />
@@ -487,9 +662,16 @@ const handleSaveReview = () => {
                 <p :class="['text-xs font-bold', log.done ? 'text-slate-900' : 'text-slate-400']">
                   {{ log.title }}
                 </p>
-                <span class="text-[11px] text-slate-400">{{ log.time }}</span>
+                <span
+                  :class="[
+                    'rounded-md px-2 py-0.5 text-[11px] font-semibold',
+                    log.done ? 'bg-indigo-50 text-indigo-700' : 'bg-slate-100 text-slate-400',
+                  ]"
+                >
+                  {{ log.badge }}
+                </span>
               </div>
-              <p :class="['mt-0.5 text-xs', log.done ? 'text-slate-600' : 'text-slate-400']">
+              <p :class="['mt-0.5 text-xs leading-relaxed', log.done ? 'text-slate-600' : 'text-slate-400']">
                 {{ log.desc }}
               </p>
             </div>
@@ -529,9 +711,11 @@ const handleSaveReview = () => {
                 {{ formatRupiah(item.price * item.quantity) }}
               </span>
 
-              <template v-if="order.status === 'delivered'">
+              <!-- Tombol Beri Rating muncul saat statusPengiriman sudah 'delivered' (Sudah Sampai) -->
+              <template v-if="normalizedShipping === 'delivered'">
                 <button
-                  v-if="!ratedItemIds.includes(item.id)"
+                  v-if="!isItemRated(item)"
+                  type="button"
                   @click="openRatingModal(item)"
                   class="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-bold text-white hover:bg-amber-600"
                 >
@@ -560,7 +744,7 @@ const handleSaveReview = () => {
           </div>
 
           <button
-            v-if="order.status === 'pending'"
+            v-if="normalizedPayment === 'pending'"
             type="button"
             :disabled="isPaying"
             @click="handlePayNow"
@@ -573,6 +757,10 @@ const handleSaveReview = () => {
         </div>
 
         <div class="mt-4 space-y-2.5 text-xs">
+          <div class="flex justify-between text-slate-600">
+            <span>Status Pembayaran</span>
+            <span class="font-bold text-slate-900">{{ paymentBadgeMeta[normalizedPayment].label }}</span>
+          </div>
           <div class="flex justify-between text-slate-600">
             <span>Metode Pembayaran</span>
             <span class="font-bold text-slate-900">{{ order.paymentMethod || 'Midtrans Snap' }}</span>
@@ -604,6 +792,7 @@ const handleSaveReview = () => {
     <!-- Modal Rating -->
     <div
       v-if="ratingModal.open && ratingModal.item && order"
+      @click.self="ratingModal.open = false"
       class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs"
     >
       <div class="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl">
@@ -613,6 +802,7 @@ const handleSaveReview = () => {
             <span>Beri Rating Produk</span>
           </div>
           <button
+            type="button"
             @click="ratingModal.open = false"
             class="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
           >
@@ -666,16 +856,21 @@ const handleSaveReview = () => {
 
         <div class="mt-6 flex gap-3">
           <button
+            type="button"
             @click="ratingModal.open = false"
-            class="flex-1 rounded-xl border border-slate-300 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+            :disabled="isSubmittingReview"
+            class="flex-1 rounded-xl border border-slate-300 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
           >
             Batal
           </button>
           <button
+            type="button"
             @click="handleSaveReview"
-            class="flex-1 rounded-xl bg-indigo-600 py-2.5 text-sm font-bold text-white hover:bg-indigo-700"
+            :disabled="isSubmittingReview"
+            class="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-indigo-600 py-2.5 text-sm font-bold text-white hover:bg-indigo-700 disabled:opacity-60"
           >
-            Kirim Rating
+            <Loader2 v-if="isSubmittingReview" class="h-4 w-4 animate-spin" />
+            <span>{{ isSubmittingReview ? 'Mengirim...' : 'Kirim Rating' }}</span>
           </button>
         </div>
       </div>

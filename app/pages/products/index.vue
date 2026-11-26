@@ -16,6 +16,8 @@ const { data: rawResponse, pending } = await useFetch<
   ApiProduct[] | { products?: ApiProduct[]; data?: ApiProduct[] }
 >('/api/admin/products')
 
+const { formatRupiah } = useStore()
+
 const products = computed<ApiProduct[]>(() => {
   const res = rawResponse.value
   if (!res) return []
@@ -25,14 +27,66 @@ const products = computed<ApiProduct[]>(() => {
   return []
 })
 
+// Hitung batas harga dinamis dari produk
+const maxPriceLimit = computed(() => {
+  if (products.value.length === 0) return 30000000
+  const highest = Math.max(...products.value.map((p) => Number(p.price) || 0))
+  return Math.max(1000000, Math.ceil(highest / 100000) * 100000)
+})
+
+const priceStep = computed(() => {
+  return maxPriceLimit.value > 5000000 ? 100000 : 50000
+})
+
 // State Filter & Pencarian
 const searchQuery = ref('')
 const selectedCategory = ref('Semua')
-const selectedPriceRange = ref('all')
+const minPrice = ref<number>(0)
+const maxPrice = ref<number>(30000000)
+const isPriceFilterActive = ref(false)
 const minRating = ref(0)
 const onlyInStock = ref(false)
 const sortBy = ref('featured')
 const isMobileFilterOpen = ref(false)
+
+// Sinkronkan nilai awal slider saat data produk pertama kali masuk
+watch(
+  maxPriceLimit,
+  (newMax) => {
+    if (!isPriceFilterActive.value) {
+      maxPrice.value = newMax
+    } else if (maxPrice.value > newMax) {
+      maxPrice.value = newMax
+    }
+  },
+  { immediate: true }
+)
+
+const updatePriceFilterState = () => {
+  isPriceFilterActive.value = minPrice.value > 0 || maxPrice.value < maxPriceLimit.value
+}
+
+const handlePriceSliderChange = (e: Event) => {
+  const val = Number((e.target as HTMLInputElement).value)
+  maxPrice.value = Math.max(val, minPrice.value)
+  updatePriceFilterState()
+}
+
+const handleMinPriceInput = (e: Event) => {
+  const raw = Number((e.target as HTMLInputElement).value)
+  const safeVal = Number.isFinite(raw) ? Math.max(0, Math.min(raw, maxPrice.value)) : 0
+  minPrice.value = safeVal
+  updatePriceFilterState()
+}
+
+const handleMaxPriceInput = (e: Event) => {
+  const raw = Number((e.target as HTMLInputElement).value)
+  const safeVal = Number.isFinite(raw)
+    ? Math.max(minPrice.value, Math.min(raw, maxPriceLimit.value))
+    : maxPriceLimit.value
+  maxPrice.value = safeVal
+  updatePriceFilterState()
+}
 
 // State Pagination
 const currentPage = ref(1)
@@ -59,12 +113,19 @@ const categories = computed(() => {
   return Object.entries(counts).map(([name, count]) => ({ name, count }))
 })
 
-const priceRanges = [
-  { id: 'all', label: 'Semua Harga' },
-  { id: 'under-1m', label: 'Di bawah Rp 1 Juta' },
-  { id: '1m-2m', label: 'Rp 1 Juta – Rp 2 Juta' },
-  { id: 'above-2m', label: 'Di atas Rp 2 Juta' },
+const ratingOptions = [
+  { value: 0, label: 'Semua' },
+  { value: 3, label: '3.0+' },
+  { value: 4, label: '4.0+' },
+  { value: 4.5, label: '4.5+' },
+  { value: 5, label: '5.0' },
 ]
+
+// Helper ambil nilai rating valid produk
+const getProductRating = (item: ApiProduct) => {
+  const parsed = Number(item.rating ?? 0)
+  return Number.isFinite(parsed) ? parsed : 0
+}
 
 // 1. Proses Filtering
 const filteredProducts = computed(() => {
@@ -85,14 +146,17 @@ const filteredProducts = computed(() => {
       return false
     }
 
-    // Filter harga
-    if (selectedPriceRange.value === 'under-1m' && item.price >= 1000000) return false
-    if (selectedPriceRange.value === '1m-2m' && (item.price < 1000000 || item.price > 2000000)) return false
-    if (selectedPriceRange.value === 'above-2m' && item.price <= 2000000) return false
+    // Filter rentang harga (Min & Max via slider / input)
+    if (isPriceFilterActive.value) {
+      const price = Number(item.price)
+      if (price < minPrice.value || price > maxPrice.value) return false
+    }
 
-    // Filter rating minimal
-    const itemRating = item.rating ?? 5.0
-    if (minRating.value > 0 && itemRating < minRating.value) return false
+    // Filter rating minimal (hanya lolos jika punya rating >= minRating)
+    if (minRating.value > 0) {
+      const itemRating = getProductRating(item)
+      if (itemRating <= 0 || itemRating < minRating.value) return false
+    }
 
     // Filter stok tersedia
     if (onlyInStock.value && item.stock <= 0) return false
@@ -110,7 +174,7 @@ const sortedProducts = computed(() => {
     case 'price-desc':
       return list.sort((a, b) => b.price - a.price)
     case 'rating-desc':
-      return list.sort((a, b) => (b.rating ?? 5.0) - (a.rating ?? 5.0))
+      return list.sort((a, b) => getProductRating(b) - getProductRating(a))
     case 'newest':
       return list.sort((a, b) => b.id - a.id)
     default:
@@ -134,9 +198,12 @@ const showingRange = computed(() => {
 })
 
 // Reset ke halaman 1 setiap kali filter atau jumlah per halaman berubah
-watch([searchQuery, selectedCategory, selectedPriceRange, minRating, onlyInStock, sortBy, itemsPerPage], () => {
-  currentPage.value = 1
-})
+watch(
+  [searchQuery, selectedCategory, minPrice, maxPrice, isPriceFilterActive, minRating, onlyInStock, sortBy, itemsPerPage],
+  () => {
+    currentPage.value = 1
+  }
+)
 
 const goToPage = (page: number) => {
   if (page < 1 || page > totalPages.value) return
@@ -147,7 +214,7 @@ const goToPage = (page: number) => {
 const activeFilterCount = computed(() => {
   let count = 0
   if (selectedCategory.value !== 'Semua') count++
-  if (selectedPriceRange.value !== 'all') count++
+  if (isPriceFilterActive.value) count++
   if (minRating.value > 0) count++
   if (onlyInStock.value) count++
   if (searchQuery.value.trim()) count++
@@ -157,7 +224,9 @@ const activeFilterCount = computed(() => {
 const resetFilters = () => {
   searchQuery.value = ''
   selectedCategory.value = 'Semua'
-  selectedPriceRange.value = 'all'
+  minPrice.value = 0
+  maxPrice.value = maxPriceLimit.value
+  isPriceFilterActive.value = false
   minRating.value = 0
   onlyInStock.value = false
   sortBy.value = 'featured'
@@ -285,23 +354,59 @@ const resetFilters = () => {
               </ul>
             </div>
 
-            <!-- Filter Rentang Harga -->
+            <!-- Filter Rentang Harga (Slider + Input) -->
             <div class="border-t border-slate-100 pt-5">
-              <h3 class="text-xs font-bold uppercase tracking-wider text-slate-900">Rentang Harga</h3>
-              <div class="mt-3 space-y-2">
-                <label
-                  v-for="range in priceRanges"
-                  :key="range.id"
-                  class="flex cursor-pointer items-center gap-2.5 text-sm text-slate-700"
-                >
+              <div class="flex items-center justify-between gap-2">
+                <h3 class="text-xs font-bold uppercase tracking-wider text-slate-900">Rentang Harga</h3>
+                <span class="text-xs font-extrabold text-indigo-600">
+                  {{ isPriceFilterActive ? `${formatRupiah(minPrice)} – ${formatRupiah(maxPrice)}` : 'Semua Harga' }}
+                </span>
+              </div>
+
+              <div class="mt-3">
+                <input
+                  type="range"
+                  min="0"
+                  :max="maxPriceLimit"
+                  :step="priceStep"
+                  :value="maxPrice"
+                  @input="handlePriceSliderChange"
+                  aria-label="Geser batas harga maksimal"
+                  class="h-2 w-full cursor-pointer appearance-none rounded-lg bg-black accent-indigo-600 dark:bg-slate-600 dark:accent-white"
+                />
+                <div class="mt-1.5 flex items-center justify-between text-[11px] font-medium text-slate-500">
+                  <span>Rp 0</span>
+                  <span>{{ formatRupiah(maxPriceLimit) }}</span>
+                </div>
+              </div>
+
+              <div class="mt-3 grid grid-cols-2 gap-2">
+                <div>
+                  <label class="mb-1 block text-[11px] font-semibold text-slate-500">Harga Min</label>
                   <input
-                    v-model="selectedPriceRange"
-                    type="radio"
-                    :value="range.id"
-                    class="h-4 w-4 border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                    type="number"
+                    min="0"
+                    :max="maxPrice"
+                    :step="priceStep"
+                    :value="minPrice"
+                    @input="handleMinPriceInput"
+                    placeholder="0"
+                    class="w-full rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-slate-800 focus:border-indigo-600 focus:bg-white focus:outline-none"
                   />
-                  <span>{{ range.label }}</span>
-                </label>
+                </div>
+                <div>
+                  <label class="mb-1 block text-[11px] font-semibold text-slate-500">Harga Maks</label>
+                  <input
+                    type="number"
+                    :min="minPrice"
+                    :max="maxPriceLimit"
+                    :step="priceStep"
+                    :value="maxPrice"
+                    @input="handleMaxPriceInput"
+                    placeholder="Maks"
+                    class="w-full rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-slate-800 focus:border-indigo-600 focus:bg-white focus:outline-none"
+                  />
+                </div>
               </div>
             </div>
 
@@ -310,20 +415,21 @@ const resetFilters = () => {
               <h3 class="text-xs font-bold uppercase tracking-wider text-slate-900">Rating Minimal</h3>
               <div class="mt-3 flex flex-wrap gap-2">
                 <button
-                  v-for="r in [0, 4.7, 4.8, 4.9]"
-                  :key="r"
-                  @click="minRating = r"
+                  v-for="opt in ratingOptions"
+                  :key="opt.value"
+                  type="button"
+                  @click="minRating = opt.value"
                   :class="[
                     'inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition',
-                    minRating === r
+                    minRating === opt.value
                       ? 'border-indigo-600 bg-indigo-600 text-white'
                       : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50',
                   ]"
                 >
-                  <template v-if="r === 0">Semua</template>
+                  <template v-if="opt.value === 0">{{ opt.label }}</template>
                   <template v-else>
                     <Star class="h-3 w-3 fill-amber-400 text-amber-400" />
-                    <span>{{ r }}+</span>
+                    <span>{{ opt.label }}</span>
                   </template>
                 </button>
               </div>
